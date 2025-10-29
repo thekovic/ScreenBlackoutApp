@@ -1,0 +1,5 @@
+#pragma once
+
+#define IDD_MONITOR_DIALOG 101
+#define IDC_MONITOR_COMBO 1001
+#define IDC_STATIC 1004
