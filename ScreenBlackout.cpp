@@ -13,6 +13,9 @@
 #include <dxgi.h>
 #include <wrl/client.h>
 #include <commctrl.h>
+#include <setupapi.h>
+#include <devguid.h>
+#include <regstr.h>
 
 #include <string>
 #include <vector>
@@ -23,6 +26,7 @@
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "setupapi.lib")
 
 using Microsoft::WRL::ComPtr;
 
@@ -31,7 +35,59 @@ struct MonitorInfo
 {
     HMONITOR hMon;
     MONITORINFOEXW info;
+    std::wstring friendlyName;
 };
+
+std::wstring GetMonitorFriendlyName(const std::wstring& deviceName)
+{
+    std::wstring result = L"Unknown Monitor";
+
+    HDEVINFO hDevInfo = SetupDiGetClassDevsExW(&GUID_DEVCLASS_MONITOR, nullptr, nullptr, DIGCF_PRESENT, nullptr, nullptr, nullptr);
+    if (hDevInfo == INVALID_HANDLE_VALUE) return result;
+
+    SP_DEVINFO_DATA devInfo{};
+    devInfo.cbSize = sizeof(devInfo);
+
+    for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &devInfo); ++i)
+    {
+        HKEY hKey = SetupDiOpenDevRegKey(hDevInfo, &devInfo, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
+        if (hKey)
+        {
+            BYTE edid[256];
+            DWORD edidSize = sizeof(edid);
+            DWORD type = 0;
+
+            if (RegQueryValueExW(hKey, L"EDID", nullptr, &type, edid, &edidSize) == ERROR_SUCCESS && type == REG_BINARY)
+            {
+                // The display model name is stored as an ASCII string inside the descriptor starting at byte 54 (in one of the descriptor blocks).
+                for (int j = 54; j + 17 < (int) edidSize; j += 18)
+                {
+                    // Look for descriptor with tag 0xFC (monitor name).
+                    if (edid[j] == 0x00 && edid[j + 1] == 0x00 && edid[j + 2] == 0x00 && edid[j + 3] == 0xFC)
+                    {
+                        char name[14] = {};
+                        memcpy(name, &edid[j + 5], 13);
+                        // Trim trailing spaces/newlines.
+                        for (int k = 12; k >= 0; --k)
+                        {
+                            if (name[k] == ' ' || name[k] == '\n' || name[k] == '\r') name[k] = 0;
+                            else break;
+                        }
+                        std::wstring wname;
+                        int len = MultiByteToWideChar(CP_UTF8, 0, name, -1, nullptr, 0);
+                        wname.resize(len);
+                        MultiByteToWideChar(CP_UTF8, 0, name, -1, &wname[0], len);
+                        result = wname;
+                        break;
+                    }
+                }
+            }
+            RegCloseKey(hKey);
+        }
+    }
+    SetupDiDestroyDeviceInfoList(hDevInfo);
+    return result;
+}
 
 static std::vector<MonitorInfo> EnumerateMonitors()
 {
@@ -44,11 +100,19 @@ static std::vector<MonitorInfo> EnumerateMonitors()
             MonitorInfo mi{};
             mi.hMon = hMon;
             mi.info.cbSize = sizeof(mi.info);
-            if (GetMonitorInfoW(hMon, &mi.info)) vec->push_back(mi);
+            bool foundMonitor = GetMonitorInfoW(hMon, &mi.info);
+            if (foundMonitor)
+            {
+                // Enhance with model name.
+                mi.friendlyName = GetMonitorFriendlyName(mi.info.szDevice);
+                vec->push_back(mi);
+            }
+
             return TRUE;
         },
         reinterpret_cast<LPARAM>(&out)
     );
+
     return out;
 }
 
@@ -162,6 +226,8 @@ int RunRenderer(int monitorIndex)
         g_Context->ClearRenderTargetView(g_Rtv.Get(), black);
         g_Swapchain->Present(1, 0);
     }
+
+    return 0;
 }
 
 // ---------------------------- GUI Launcher ----------------------------
@@ -178,9 +244,8 @@ INT_PTR CALLBACK LauncherDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPar
             for (size_t i = 0; i < pMons->size(); ++i)
             {
                 const auto& m = (*pMons)[i];
-                wchar_t buf[256];
-                swprintf_s(buf, L"[%zu]: %s", i, m.info.szDevice);
-                SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM) buf);
+                std::wstring monitorOption = L"[" + std::to_wstring(i) + L"]: " + m.friendlyName;
+                SendMessageW(combo, CB_ADDSTRING, 0, (LPARAM) monitorOption.data());
             }
             SendMessageW(combo, CB_SETCURSEL, 0, 0);
             return TRUE;
@@ -221,7 +286,7 @@ int RunDialogGui(HINSTANCE hInst)
 
     // This function requires an .rc resource file to define the window layout
     // but it's still better than creating the dialog template struct in memory by hand.
-    int sel = DialogBoxParamW(
+    int sel = (int) DialogBoxParamW(
         hInst, MAKEINTRESOURCE(IDD_MONITOR_DIALOG), nullptr,
         LauncherDlgProc, (LPARAM)&monitors
     );
