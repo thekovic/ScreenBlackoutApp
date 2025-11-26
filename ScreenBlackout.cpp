@@ -40,6 +40,7 @@ struct MonitorInfo
 
 std::wstring GetMonitorFriendlyName(const std::wstring& deviceName)
 {
+    int monitorIndex = _wtoi(&(deviceName.back())) - 1;
     std::wstring result = L"Unknown Monitor";
 
     HDEVINFO hDevInfo = SetupDiGetClassDevsExW(&GUID_DEVCLASS_MONITOR, nullptr, nullptr, DIGCF_PRESENT, nullptr, nullptr, nullptr);
@@ -48,43 +49,42 @@ std::wstring GetMonitorFriendlyName(const std::wstring& deviceName)
     SP_DEVINFO_DATA devInfo{};
     devInfo.cbSize = sizeof(devInfo);
 
-    for (DWORD i = 0; SetupDiEnumDeviceInfo(hDevInfo, i, &devInfo); ++i)
+    SetupDiEnumDeviceInfo(hDevInfo, monitorIndex, &devInfo);
+    HKEY hKey = SetupDiOpenDevRegKey(hDevInfo, &devInfo, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
+    if (hKey)
     {
-        HKEY hKey = SetupDiOpenDevRegKey(hDevInfo, &devInfo, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
-        if (hKey)
-        {
-            BYTE edid[256];
-            DWORD edidSize = sizeof(edid);
-            DWORD type = 0;
+        BYTE edid[256];
+        DWORD edidSize = sizeof(edid);
+        DWORD type = 0;
 
-            if (RegQueryValueExW(hKey, L"EDID", nullptr, &type, edid, &edidSize) == ERROR_SUCCESS && type == REG_BINARY)
+        if (RegQueryValueExW(hKey, L"EDID", nullptr, &type, edid, &edidSize) == ERROR_SUCCESS && type == REG_BINARY)
+        {
+            // The display model name is stored as an ASCII string inside the descriptor starting at byte 54 (in one of the descriptor blocks).
+            for (int j = 54; j + 17 < (int) edidSize; j += 18)
             {
-                // The display model name is stored as an ASCII string inside the descriptor starting at byte 54 (in one of the descriptor blocks).
-                for (int j = 54; j + 17 < (int) edidSize; j += 18)
+                // Look for descriptor with tag 0xFC (monitor name).
+                if (edid[j] == 0x00 && edid[j + 1] == 0x00 && edid[j + 2] == 0x00 && edid[j + 3] == 0xFC)
                 {
-                    // Look for descriptor with tag 0xFC (monitor name).
-                    if (edid[j] == 0x00 && edid[j + 1] == 0x00 && edid[j + 2] == 0x00 && edid[j + 3] == 0xFC)
+                    char name[14] = {};
+                    memcpy(name, &edid[j + 5], 13);
+                    // Trim trailing spaces/newlines.
+                    for (int k = 12; k >= 0; --k)
                     {
-                        char name[14] = {};
-                        memcpy(name, &edid[j + 5], 13);
-                        // Trim trailing spaces/newlines.
-                        for (int k = 12; k >= 0; --k)
-                        {
-                            if (name[k] == ' ' || name[k] == '\n' || name[k] == '\r') name[k] = 0;
-                            else break;
-                        }
-                        std::wstring wname;
-                        int len = MultiByteToWideChar(CP_UTF8, 0, name, -1, nullptr, 0);
-                        wname.resize(len);
-                        MultiByteToWideChar(CP_UTF8, 0, name, -1, &wname[0], len);
-                        result = wname;
-                        break;
+                        if (name[k] == ' ' || name[k] == '\n' || name[k] == '\r') name[k] = 0;
+                        else break;
                     }
+                    std::wstring wname;
+                    int len = MultiByteToWideChar(CP_UTF8, 0, name, -1, nullptr, 0);
+                    wname.resize(len);
+                    MultiByteToWideChar(CP_UTF8, 0, name, -1, &wname[0], len);
+                    result = wname;
+                    break;
                 }
             }
-            RegCloseKey(hKey);
         }
+        RegCloseKey(hKey);
     }
+
     SetupDiDestroyDeviceInfoList(hDevInfo);
     return result;
 }
