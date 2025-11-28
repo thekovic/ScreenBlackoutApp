@@ -11,15 +11,19 @@
 #include <io.h>
 #include <d3d11.h>
 #include <dxgi.h>
+#include <dxgiformat.h>
+#include <d3dcommon.h>
 #include <wrl/client.h>
-#include <commctrl.h>
 #include <setupapi.h>
 #include <devguid.h>
-#include <regstr.h>
 
-#include <string>
-#include <vector>
 #include <iostream>
+#include <string>
+#include <string_view>
+#include <vector>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include "Resource.h"
 
